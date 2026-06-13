@@ -48,6 +48,14 @@ void ZmqBridge::submitLoadModel(const juce::String& modelPath) {
     modelLoadPending_.store(true);
 }
 
+void ZmqBridge::submitTrainRequest(const juce::String& audioPath, const juce::String& modelName) {
+    juce::ScopedLock lock(modelLock_);
+    pendingTrainPath_ = audioPath;
+    pendingTrainName_ = modelName.isEmpty() ? juce::File(audioPath).getFileNameWithoutExtension() : modelName;
+    trainStatus_ = "Submitting...";
+    trainPending_.store(true);
+}
+
 ZmqBridge::SwapResponse ZmqBridge::consumeResponse() {
     juce::ScopedLock lock(responseLock_);
     responseReady_.store(false);
@@ -127,6 +135,55 @@ void ZmqBridge::processQueue() {
                     loadedModelName_ = juce::File(modelPath).getFileNameWithoutExtension();
                 }
             }
+        }
+    }
+
+    // Handle train requests
+    if (trainPending_.load()) {
+        juce::String trainPath, trainName;
+        {
+            juce::ScopedLock lock(modelLock_);
+            trainPath = pendingTrainPath_;
+            trainName = pendingTrainName_;
+            trainPending_.store(false);
+        }
+
+        juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+        obj->setProperty("version", "1.0.0");
+        obj->setProperty("command", "TRAIN");
+        obj->setProperty("input", trainPath);
+        obj->setProperty("model_name", trainName);
+        obj->setProperty("epochs", 100);
+        obj->setProperty("batch_size", 8);
+        obj->setProperty("sample_rate", 40000);
+
+        juce::String json = juce::JSON::toString(juce::var(obj.get()));
+        auto jsonUtf8 = json.toRawUTF8();
+
+        int sendRc = zmq_send(zmqSocket_, jsonUtf8, strlen(jsonUtf8), 0);
+        if (sendRc >= 0) {
+            int longTimeout = 3600000;
+            zmq_setsockopt(zmqSocket_, ZMQ_RCVTIMEO, &longTimeout, sizeof(longTimeout));
+
+            char buf[8192];
+            int recvRc = zmq_recv(zmqSocket_, buf, sizeof(buf) - 1, 0);
+
+            int normalTimeout = 10000;
+            zmq_setsockopt(zmqSocket_, ZMQ_RCVTIMEO, &normalTimeout, sizeof(normalTimeout));
+
+            if (recvRc > 0) {
+                buf[recvRc] = '\0';
+                juce::String resp(buf);
+                if (resp.contains("SUCCESS")) {
+                    trainStatus_ = "Training complete! Model saved.";
+                } else {
+                    trainStatus_ = "Training failed: " + resp;
+                }
+            } else {
+                trainStatus_ = "Training timed out";
+            }
+        } else {
+            trainStatus_ = "Failed to send training request";
         }
     }
 

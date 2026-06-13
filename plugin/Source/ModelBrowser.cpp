@@ -60,7 +60,6 @@ ModelBrowser::ModelBrowser(ClonadaProcessor& p) : processor_(p) {
 
     setupButton(trainButton_, ClonadaLookAndFeel::kAmber);
     trainButton_.onClick = [this] {
-        // Cloud training trigger — sends request to RunPod endpoint
         auto& lic = processor_.getLicenseClient();
         if (!lic.isActivated()) {
             juce::AlertWindow::showMessageBoxAsync(
@@ -71,18 +70,23 @@ ModelBrowser::ModelBrowser(ClonadaProcessor& p) : processor_(p) {
         }
 
         auto chooser = std::make_shared<juce::FileChooser>(
-            "Select Training Audio (WAV/MP3)", juce::File(), "*.wav;*.mp3;*.flac");
+            "Select Training Audio (WAV/MP3/FLAC)", juce::File(), "*.wav;*.mp3;*.flac");
+        auto* self = this;
         chooser->launchAsync(
             juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [chooser](const juce::FileChooser& fc) {
+            [chooser, self](const juce::FileChooser& fc) {
                 auto result = fc.getResult();
                 if (!result.existsAsFile()) return;
 
+                auto& bridge = self->processor_.getBridge();
+                bridge.submitTrainRequest(result.getFullPathName(), result.getFileNameWithoutExtension());
+
                 juce::AlertWindow::showMessageBoxAsync(
                     juce::MessageBoxIconType::InfoIcon,
-                    "Training Submitted",
-                    "Your voice sample has been queued for cloud training.\n"
-                    "The model will appear in your models folder when ready.\n\n"
+                    "Training Started",
+                    "Your voice sample is being uploaded and processed on cloud GPU.\n"
+                    "Training typically takes 15-30 minutes.\n"
+                    "The model will automatically appear in your models list when ready.\n\n"
                     "File: " + result.getFileName());
             });
     };

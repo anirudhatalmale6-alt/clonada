@@ -33,11 +33,14 @@ public:
 
     void submitSwapRequest(SwapRequest request);
     void submitLoadModel(const juce::String& modelPath);
+    void submitTrainRequest(const juce::String& audioPath, const juce::String& modelName = "");
     bool hasResponse() const { return responseReady_.load(); }
     SwapResponse consumeResponse();
 
     bool isModelLoaded() const { return modelLoaded_.load(); }
     juce::String getLoadedModelName() const { return loadedModelName_; }
+    bool isTraining() const { return trainPending_.load(); }
+    juce::String getTrainStatus() const { return trainStatus_; }
 
     void setOnConnectionChanged(std::function<void(ConnectionState)> cb) { onConnectionChanged_ = std::move(cb); }
 
@@ -51,6 +54,10 @@ private:
     std::atomic<bool> requestPending_{false};
     std::atomic<bool> modelLoadPending_{false};
     std::atomic<bool> modelLoaded_{false};
+    std::atomic<bool> trainPending_{false};
+    juce::String pendingTrainPath_;
+    juce::String pendingTrainName_;
+    juce::String trainStatus_;
 
     juce::String endpoint_;
     SwapRequest pendingRequest_;

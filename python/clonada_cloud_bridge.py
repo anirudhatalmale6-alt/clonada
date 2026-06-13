@@ -386,6 +386,131 @@ class ClonadaCloudBridge:
         except Exception as e:
             return {"status": "ERROR", "message": str(e)}
 
+    def handle_train(self, message):
+        """Cloud voice training via RunPod."""
+        if not self._check_feature("train"):
+            return {"status": "ERROR", "message": "License required for voice training. Upgrade to Advanced."}
+
+        input_path = message.get("input", "")
+        model_name = message.get("model_name", f"clonada_voice_{int(time.time())}")
+        epochs = message.get("epochs", 100)
+        batch_size = message.get("batch_size", 8)
+        sample_rate = message.get("sample_rate", 40000)
+        progress_file = message.get("progress", "")
+
+        if not input_path or not os.path.exists(input_path):
+            return {"status": "ERROR", "message": f"Training audio not found: {input_path}"}
+
+        def write_progress(val, text):
+            if progress_file:
+                try:
+                    with open(progress_file, "w") as f:
+                        f.write(f"{val}|{text}")
+                except:
+                    pass
+
+        try:
+            write_progress(0.05, "Uploading training audio...")
+
+            upload_resp = requests.post(
+                f"{LICENSE_SERVER}/upload-dataset",
+                files={"dataset": (os.path.basename(input_path), open(input_path, "rb"))},
+                timeout=300
+            )
+            upload_resp.raise_for_status()
+            upload_data = upload_resp.json()
+            dataset_url = upload_data.get("dataset_url")
+            if not dataset_url:
+                return {"status": "ERROR", "message": "Failed to upload training dataset"}
+
+            write_progress(0.1, "Submitting training job to RunPod...")
+
+            runpod_key = _load_runpod_key()
+            if not runpod_key:
+                return {"status": "ERROR", "message": "RunPod API key not configured"}
+
+            headers = {
+                "Authorization": f"Bearer {runpod_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "input": {
+                    "mode": "train",
+                    "license_key": self._get_license_key(),
+                    "dataset_url": dataset_url,
+                    "model_name": model_name,
+                    "epochs": epochs,
+                    "batch_size": batch_size,
+                    "sample_rate": sample_rate,
+                    "clean_vocals": True,
+                    "cleanup_after_training": True,
+                }
+            }
+
+            resp = requests.post(f"{RUNPOD_BASE}/run", json=payload, headers=headers, timeout=30)
+            resp.raise_for_status()
+            job = resp.json()
+            job_id = job.get("id", "")
+
+            write_progress(0.15, f"Training job queued: {job_id}")
+
+            status_url = f"{RUNPOD_BASE}/status/{job_id}"
+            max_wait = 3600
+            start_time = time.time()
+
+            while time.time() - start_time < max_wait:
+                time.sleep(15)
+                try:
+                    status_resp = requests.get(status_url, headers=headers, timeout=30)
+                    status_data = status_resp.json()
+                except:
+                    continue
+
+                job_status = status_data.get("status", "")
+
+                if job_status == "COMPLETED":
+                    output = status_data.get("output", {})
+                    model_url = output.get("model_url", "")
+                    write_progress(0.9, "Downloading trained model...")
+
+                    if model_url:
+                        os.makedirs(self.models_dir, exist_ok=True)
+                        safe_name = model_name.replace(" ", "_")
+                        model_file = os.path.join(self.models_dir, f"{safe_name}.pth")
+                        model_resp = requests.get(model_url, timeout=300)
+                        with open(model_file, "wb") as f:
+                            f.write(model_resp.content)
+
+                        index_url = output.get("index_url", "")
+                        if index_url:
+                            index_file = os.path.join(self.models_dir, f"{safe_name}.index")
+                            idx_resp = requests.get(index_url, timeout=120)
+                            with open(index_file, "wb") as f:
+                                f.write(idx_resp.content)
+
+                        write_progress(1.0, f"Training complete: {safe_name}")
+                        return {"status": "SUCCESS", "model_path": model_file, "model_name": safe_name}
+                    else:
+                        write_progress(1.0, "Training complete (no model URL returned)")
+                        return {"status": "SUCCESS", "message": "Training complete"}
+
+                elif job_status == "FAILED":
+                    error = status_data.get("error", "Unknown error")
+                    write_progress(0.0, f"Training failed: {error}")
+                    return {"status": "ERROR", "message": f"Cloud training failed: {error}"}
+
+                elif job_status in ("IN_PROGRESS", "IN_QUEUE"):
+                    elapsed = int(time.time() - start_time)
+                    est_progress = min(0.15 + (elapsed / 1800) * 0.7, 0.85)
+                    status_text = "Training in progress" if job_status == "IN_PROGRESS" else "Waiting for GPU"
+                    write_progress(est_progress, f"{status_text} ({elapsed}s)...")
+
+            return {"status": "ERROR", "message": "Training timed out after 1 hour"}
+
+        except Exception as e:
+            return {"status": "ERROR", "message": f"Training error: {str(e)}"}
+
     def process_stream(self):
         """Main event loop."""
         print(f"\n{'='*60}")
@@ -399,6 +524,7 @@ class ClonadaCloudBridge:
             "SWAP": self.handle_swap,
             "SWAP_FILE": self.handle_swap_file,
             "SEPARATE": self.handle_separate,
+            "TRAIN": self.handle_train,
             "LIST_MODELS": self.handle_list_models,
             "HEALTH": self.handle_health,
             "ACTIVATE": self.handle_activate,
