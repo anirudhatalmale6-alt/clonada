@@ -99,31 +99,84 @@ def cmd_separate(args):
 
 def cmd_train(args):
     """Execute cloud training command (RunPod)."""
-    write_progress(args.progress, 0.05, "Preparing dataset...")
-
-    # TODO: Implement RunPod training submission
-    # 1. Export track audio from REAPER project
-    # 2. Upload to RunPod via API
-    # 3. Monitor training progress
-    # 4. Download trained model
-
     import requests
+    import glob
+
+    LICENSE_SERVER = "http://155.133.27.205/api"
+
+    write_progress(args.progress, 0.05, "Locating audio files...")
+
+    audio_path = getattr(args, 'input', '') or ''
+    if not audio_path or not os.path.exists(audio_path):
+        search_dir = os.path.dirname(args.progress) if args.progress else os.getcwd()
+        audio_files = []
+        for ext in ['*.wav', '*.mp3', '*.flac', '*.ogg']:
+            audio_files.extend(glob.glob(os.path.join(search_dir, ext)))
+        if not audio_files:
+            home_clonada = os.path.join(os.path.expanduser("~"), "Clonada", "training")
+            if os.path.isdir(home_clonada):
+                for ext in ['*.wav', '*.mp3', '*.flac', '*.ogg']:
+                    audio_files.extend(glob.glob(os.path.join(home_clonada, ext)))
+        if not audio_files:
+            write_progress(args.progress, 0.0, "No audio files found for training. Place WAV files in ~/Clonada/training/")
+            print("ERROR|No audio files found for training", file=sys.stderr)
+            sys.exit(1)
+        audio_path = audio_files[0]
+
+    write_progress(args.progress, 0.1, f"Uploading dataset: {os.path.basename(audio_path)}...")
+
+    try:
+        with open(audio_path, 'rb') as f:
+            upload_resp = requests.post(
+                f"{LICENSE_SERVER}/upload-dataset",
+                files={"dataset": (os.path.basename(audio_path), f)},
+                timeout=300
+            )
+        upload_resp.raise_for_status()
+        upload_data = upload_resp.json()
+        dataset_url = upload_data.get("dataset_url")
+        if not dataset_url:
+            write_progress(args.progress, 0.0, "Upload failed: no URL returned")
+            print("ERROR|Upload failed", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        write_progress(args.progress, 0.0, f"Upload failed: {e}")
+        print(f"ERROR|Upload failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    write_progress(args.progress, 0.15, "Dataset uploaded. Submitting training job...")
+
+    license_key = getattr(args, 'key', '') or ''
+    if not license_key:
+        config_path = os.path.join(os.path.expanduser("~"), "Clonada", "config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path) as f:
+                    cfg = json.load(f)
+                    license_key = cfg.get("license_key", "")
+            except:
+                pass
 
     headers = {
         "Authorization": f"Bearer {args.runpod_key}",
         "Content-Type": "application/json"
     }
 
-    write_progress(args.progress, 0.1, "Submitting training job to RunPod...")
+    endpoint_id = args.runpod_endpoint or 'lmxzg81itmh3on'
+    endpoint_url = f"https://api.runpod.ai/v2/{endpoint_id}/run"
 
-    # RunPod serverless endpoint
-    endpoint_url = f"https://api.runpod.ai/v2/{args.runpod_endpoint or 'lmxzg81itmh3on'}/run"
+    model_name = getattr(args, 'model_name', '') or f"clonada_voice_{int(time.time())}"
 
     payload = {
         "input": {
+            "mode": "train",
+            "license_key": license_key,
+            "dataset_url": dataset_url,
+            "model_name": model_name,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "sample_rate": args.sample_rate,
+            "clean_vocals": True,
             "cleanup_after_training": True,
         }
     }
@@ -134,13 +187,14 @@ def cmd_train(args):
         job = resp.json()
         job_id = job.get("id", "")
 
-        write_progress(args.progress, 0.2, f"Job submitted: {job_id}")
+        write_progress(args.progress, 0.2, f"Training job submitted: {job_id}")
 
-        # Poll for completion
-        endpoint_id = args.runpod_endpoint or 'lmxzg81itmh3on'
         status_url = f"https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}"
-        while True:
-            time.sleep(10)
+        max_wait = 3600
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait:
+            time.sleep(15)
             status_resp = requests.get(status_url, headers=headers, timeout=30)
             status_data = status_resp.json()
             job_status = status_data.get("status", "")
@@ -150,15 +204,23 @@ def cmd_train(args):
                 model_url = output.get("model_url", "")
                 write_progress(args.progress, 0.9, "Downloading trained model...")
 
-                # Download model
                 if model_url and args.models_dir:
-                    model_name = f"clonada_model_{int(time.time())}.pth"
-                    model_path = os.path.join(args.models_dir, model_name)
-                    model_resp = requests.get(model_url, timeout=120)
-                    with open(model_path, "wb") as f:
+                    os.makedirs(args.models_dir, exist_ok=True)
+                    safe_name = model_name.replace(" ", "_")
+                    model_file = os.path.join(args.models_dir, f"{safe_name}.pth")
+                    model_resp = requests.get(model_url, timeout=300)
+                    with open(model_file, "wb") as f:
                         f.write(model_resp.content)
-                    write_progress(args.progress, 1.0, f"Training complete: {model_name}")
-                    print(f"SUCCESS|{model_path}")
+
+                    index_url = output.get("index_url", "")
+                    if index_url:
+                        index_file = os.path.join(args.models_dir, f"{safe_name}.index")
+                        idx_resp = requests.get(index_url, timeout=120)
+                        with open(index_file, "wb") as f:
+                            f.write(idx_resp.content)
+
+                    write_progress(args.progress, 1.0, f"Training complete: {safe_name}")
+                    print(f"SUCCESS|{model_file}")
                 else:
                     write_progress(args.progress, 1.0, "Training complete")
                     print("SUCCESS|")
@@ -170,11 +232,15 @@ def cmd_train(args):
                 print(f"ERROR|{error}", file=sys.stderr)
                 sys.exit(1)
 
-            elif job_status == "IN_PROGRESS":
-                # Estimate progress
-                elapsed = status_data.get("executionTime", 0)
-                est_progress = min(0.2 + (elapsed / 3600) * 0.6, 0.85)
-                write_progress(args.progress, est_progress, f"Training in progress ({elapsed}s elapsed)...")
+            elif job_status in ("IN_PROGRESS", "IN_QUEUE"):
+                elapsed = int(time.time() - start_time)
+                est_progress = min(0.2 + (elapsed / 1800) * 0.6, 0.85)
+                status_text = "Training in progress" if job_status == "IN_PROGRESS" else "Waiting for GPU worker"
+                write_progress(args.progress, est_progress, f"{status_text} ({elapsed}s)...")
+        else:
+            write_progress(args.progress, 0.0, "Training timed out after 1 hour")
+            print("ERROR|Training timed out", file=sys.stderr)
+            sys.exit(1)
 
     except requests.RequestException as e:
         write_progress(args.progress, 0.0, f"RunPod error: {e}")
@@ -239,6 +305,7 @@ def main():
     parser.add_argument("--runpod_key", type=str, default="", help="RunPod API key")
     parser.add_argument("--runpod_endpoint", type=str, default="lmxzg81itmh3on", help="RunPod endpoint ID")
     parser.add_argument("--models_dir", type=str, default="", help="Models directory")
+    parser.add_argument("--model_name", type=str, default="", help="Name for trained voice model")
 
     # Activation args
     parser.add_argument("--key", type=str, help="License key")

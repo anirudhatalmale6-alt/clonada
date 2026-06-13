@@ -398,6 +398,74 @@ end
 -- CLOUD TRAINING
 -- ═══════════════════════════════════════════════════════════
 
+local function export_track_audio(track_index)
+  local track = r.GetTrack(0, track_index)
+  if not track then return nil end
+
+  local training_dir
+  if r.GetOS():find("Win") then
+    training_dir = os.getenv("USERPROFILE") .. "\\Clonada\\training"
+  else
+    training_dir = os.getenv("HOME") .. "/Clonada/training"
+  end
+  os.execute('mkdir -p "' .. training_dir .. '"')
+
+  local export_path = training_dir .. "/training_dataset.wav"
+
+  -- Solo only the target track
+  local track_count = r.CountTracks(0)
+  local solo_states = {}
+  for i = 0, track_count - 1 do
+    local t = r.GetTrack(0, i)
+    solo_states[i] = r.GetMediaTrackInfo_Value(t, "I_SOLO")
+    r.SetMediaTrackInfo_Value(t, "I_SOLO", 0)
+  end
+  r.SetMediaTrackInfo_Value(track, "I_SOLO", 2)
+
+  -- Get project time selection or full project bounds
+  local proj_start, proj_end = r.GetProjectTimeSelection2(0, false)
+  if proj_start == proj_end then
+    proj_end = r.GetProjectLength(0)
+    proj_start = 0
+  end
+
+  -- Render via command line render
+  local render_cfg = r.GetSetProjectInfo_String(0, "RENDER_FILE", export_path, true)
+  r.GetSetProjectInfo(0, "RENDER_STARTPOS", proj_start, true)
+  r.GetSetProjectInfo(0, "RENDER_ENDPOS", proj_end, true)
+  r.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", 0, true)
+  r.Main_OnCommand(42230, 0) -- File: Render project, using the most recent render settings, auto-close render dialog
+
+  -- Restore solo states
+  for i = 0, track_count - 1 do
+    local t = r.GetTrack(0, i)
+    r.SetMediaTrackInfo_Value(t, "I_SOLO", solo_states[i])
+  end
+
+  -- Check if file was created
+  local f = io.open(export_path, "r")
+  if f then
+    f:close()
+    return export_path
+  end
+
+  -- Fallback: collect media items from the track
+  local item_count = r.CountTrackMediaItems(track)
+  if item_count > 0 then
+    local item = r.GetTrackMediaItem(track, 0)
+    local take = r.GetActiveTake(item)
+    if take then
+      local src = r.GetMediaItemTake_Source(take)
+      if src then
+        local path = r.GetMediaSourceFileName(src, "")
+        if path ~= "" then return path end
+      end
+    end
+  end
+
+  return nil
+end
+
 local function start_cloud_training()
   if train_runpod_key == "" then
     set_status("Enter your RunPod API key in Settings", 0xFF4444FF)
@@ -417,16 +485,25 @@ local function start_cloud_training()
 
   is_processing = true
   progress_value = 0.0
-  progress_text = "Preparing dataset for cloud training..."
+  progress_text = "Exporting track audio..."
+  set_status("Exporting track audio for training...", 0x44AAFFFF)
+
+  local audio_path = export_track_audio(train_track_idx)
+  if not audio_path then
+    is_processing = false
+    set_status("Could not export track audio. Make sure the track has audio items.", 0xFF4444FF)
+    return
+  end
+
+  progress_text = "Uploading to cloud..."
   set_status("Training job submitted to RunPod", 0x44AAFFFF)
 
   local cli = get_cli_path()
   local log_path = script_path .. "train_progress.tmp"
 
-  -- Export track audio, upload to RunPod, start training
   local cmd = string.format(
-    '"%s" --command TRAIN --track %d --epochs %d --batch_size %d --sample_rate %d --runpod_key "%s" --models_dir "%s" --port %d --progress "%s"',
-    cli, train_track_idx, train_epochs, train_batch_size, train_sample_rate,
+    '"%s" --command TRAIN --input "%s" --epochs %d --batch_size %d --sample_rate %d --runpod_key "%s" --models_dir "%s" --port %d --progress "%s"',
+    cli, audio_path, train_epochs, train_batch_size, train_sample_rate,
     train_runpod_key, settings_models_dir, settings_engine_port, log_path
   )
 
