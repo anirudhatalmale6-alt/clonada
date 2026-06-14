@@ -598,131 +598,42 @@ jobs:
             echo "::warning::Some install verification checks failed"
           fi
 
-      - name: Upload macOS PKG
+      - name: Upload to Release (macOS)
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: clonada-macos-pkg
-          path: "Clonada-${{ github.event.inputs.version }}-macOS.pkg"
-          retention-days: 30
-
-      - name: Upload macOS DMG
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: clonada-macos-dmg
-          path: "Clonada-${{ github.event.inputs.version }}-macOS.dmg"
-          retention-days: 30
-
-      - name: Upload Windows installer
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: clonada-windows-installer
-          path: "Clonada-${{ github.event.inputs.version }}-Windows-Setup.exe"
-          retention-days: 30
-
-      - name: Upload Windows ZIP (fallback)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: clonada-windows-zip
-          path: dist/Clonada/
-          retention-days: 30
-
-  create-release:
-    needs: build-plugin
-    if: always() && !cancelled()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download macOS PKG
-        uses: actions/download-artifact@v4
-        with:
-          name: clonada-macos-pkg
-          path: release/
-
-      - name: Download macOS DMG
-        uses: actions/download-artifact@v4
-        with:
-          name: clonada-macos-dmg
-          path: release/
-
-      - name: Download Windows installer
-        uses: actions/download-artifact@v4
-        with:
-          name: clonada-windows-installer
-          path: release/
-
-      - name: Download Windows ZIP
-        uses: actions/download-artifact@v4
-        with:
-          name: clonada-windows-zip
-          path: release/windows-zip/
-
-      - name: Package Windows ZIP
-        run: |
-          cd release/windows-zip && zip -r "../Clonada-${{ github.event.inputs.version }}-Windows.zip" . && cd ../..
-
-      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.event.inputs.version }}
-          name: Clonada v${{ github.event.inputs.version }}
+          tag_name: "v${{ github.event.inputs.version }}"
+          name: "Clonada v${{ github.event.inputs.version }}"
           body: |
-            ## Clonada AI Vocal Suite v${{ github.event.inputs.version }}
-
-            ### What's New — Cloud Edition
-            - **TRUE ONE-CLICK INSTALL** — macOS .pkg installer. Double-click, click Install, done. No Terminal, no Python, no manual steps.
-            - **Cloud AI Engine** — Voice conversion runs on cloud GPU. No PyTorch download, no 2GB setup. Works instantly after install.
-            - **Zero Gatekeeper issues** — Fully code-signed and Apple-notarized. No "unidentified developer" warnings.
-            - **Standalone engine binary** — Pre-compiled AI engine. No Python, no Conda, no pip. Just works.
-
-            ### Downloads
-            | Platform | Recommended | Legacy |
-            |----------|-------------|--------|
-            | macOS    | `.pkg` Installer (one-click) | `.dmg` Disk Image |
-            | Windows  | `.exe` Setup | `.zip` archive |
-
-            ### Installation
-
-            **macOS (RECOMMENDED):** Download the `.pkg` file. Double-click it. Click "Continue" then "Install". That's it — plugins, app, and AI engine all set up in 30 seconds. No Terminal needed.
-
-            **macOS (Legacy DMG):** Open the `.dmg`, double-click "Install Clonada.command".
-
-            **Windows:** Run the `.exe` installer.
-
-            After installing, open your DAW, rescan plugins, load Clonada, enter your license key. Ready to go!
-
-            ### Plugin Formats
-            - **VST3** — Windows, macOS (Ableton, FL Studio, Cubase, Pro Tools, REAPER, etc.)
-            - **Audio Unit** — macOS only (Logic Pro, GarageBand)
-            - **CLAP** — Windows, macOS (Bitwig, REAPER)
-            - **Standalone** — Windows, macOS
-
-            ### Cloud Engine
-            Voice conversion now runs on cloud GPU by default. This means:
-            - No local GPU required
-            - No PyTorch/CUDA installation
-            - Works on any Mac (Intel or Apple Silicon)
-            - ~2-5 second processing time per clip
-
-            ### Requirements
-            - Windows 10+ (64-bit) or macOS 12+ (Apple Silicon native)
-            - 4 GB RAM minimum
-            - Internet connection for license activation and voice conversion
+            Clonada AI Vocal Suite v${{ github.event.inputs.version }}
+            Built: ${{ github.sha }}
           files: |
-            release/Clonada-${{ github.event.inputs.version }}-macOS.pkg
-            release/Clonada-${{ github.event.inputs.version }}-macOS.dmg
-            release/Clonada-${{ github.event.inputs.version }}-Windows-Setup.exe
-            release/Clonada-${{ github.event.inputs.version }}-Windows.zip
+            Clonada-${{ github.event.inputs.version }}-macOS.pkg
+            Clonada-${{ github.event.inputs.version }}-macOS.dmg
           draft: false
           prerelease: false
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Release (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd dist && 7z a "../Clonada-${{ github.event.inputs.version }}-Windows.zip" Clonada/ && cd ..
+
+      - name: Upload Windows to Release
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ github.event.inputs.version }}"
+          name: "Clonada v${{ github.event.inputs.version }}"
+          files: |
+            Clonada-${{ github.event.inputs.version }}-Windows.zip
+            Clonada-${{ github.event.inputs.version }}-Windows-Setup.exe
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
